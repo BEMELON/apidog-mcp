@@ -19,7 +19,10 @@ Apidog stores an endpoint's folder in a `folderId` field on the endpoint entity 
 | `get_endpoint` | Full operation object for a single `{method, path}`. |
 | `export_spec` | Raw OpenAPI export (3.0 or 3.1) including Apidog extensions. |
 | `create_folder` | Create a new folder under a parent (by path or id). |
-| `move_endpoints` | **Actually moves** endpoints into a folder via the internal `api-folders/{id}` PUT. |
+| `move_endpoints` | **Actually moves** endpoints into a folder via the internal `http-apis/{id}` PUT. |
+| `create_endpoint` | Create a new endpoint under a folder. |
+| `update_endpoint` | Partial update of a single endpoint (name / status / path / method / tags / description / folder / raw patch). |
+| `delete_endpoint` | Delete an endpoint by id or `{method, path}`. Requires `confirm: true`. |
 
 ## Install (local path, recommended)
 
@@ -89,6 +92,59 @@ move_endpoints {
 
 By default it **appends** to the target folder's existing children. Pass `"replace": true` to overwrite.
 
+Create a new endpoint under a folder:
+
+```
+create_endpoint {
+  "name": "관리자 인보이스 단건 조회",
+  "method": "get",
+  "path": "/admin/billing/invoices/{invoice_id}",
+  "targetFolderPath": "Admin/Billing",
+  "status": "developing",
+  "tags": ["admin", "billing"]
+}
+```
+
+Edit a single endpoint (rename + change status + retag, in one call):
+
+```
+update_endpoint {
+  "method": "get",
+  "path": "/admin/billing/invoices",
+  "name": "관리자 인보이스 목록",
+  "status": "released",
+  "tags": ["admin", "billing"]
+}
+```
+
+Move + rename in one call by using `targetFolderPath`:
+
+```
+update_endpoint {
+  "endpointId": 15170107,
+  "name": "Invoice list",
+  "targetFolderPath": "Admin/Billing"
+}
+```
+
+Send raw schema fields the named args don't cover:
+
+```
+update_endpoint {
+  "endpointId": 15170107,
+  "patch": {
+    "parameters": [ /* ... */ ],
+    "responses":  { /* ... */ }
+  }
+}
+```
+
+Delete (requires `confirm: true`):
+
+```
+delete_endpoint { "method": "get", "path": "/admin/legacy/foo", "confirm": true }
+```
+
 ## Implementation notes
 
 - **Public endpoints** (`https://api.apidog.com`): `export-openapi`, `import-openapi`. Used for read-only spec snapshots.
@@ -100,11 +156,12 @@ By default it **appends** to the target folder's existing children. Pass `"repla
 
 | | apidog-sync-mcp-server | apidog-mcp |
 |---|---|---|
-| Folder moves | Via spec re-import — silent-fail | Via internal `api-folders` PUT — works |
-| Tool count | 12 (incl. reorganization planner, schema upsert, deletion) | 6 (focused on folder ops + read) |
-| Endpoint CRUD | Yes | Read-only by design; use `apidog-sync-mcp-server` for endpoint edits |
+| Folder moves | Via spec re-import — silent-fail | Via internal `http-apis` PUT — works |
+| Tool count | 12 (incl. reorganization planner, schema upsert, deletion) | 8 (folder ops + endpoint update/delete + read) |
+| Endpoint update | Via import-openapi — folder/path changes may be ignored | Direct internal PUT — authoritative |
+| Endpoint delete | Yes | Yes (requires `confirm: true`) |
 
-You can run **both** servers side-by-side: `apidog-sync-mcp-server` for endpoint/schema edits, `apidog-mcp` for the folder operations the other one can't actually do.
+`apidog-mcp` now covers folder ops + endpoint partial update + delete via Apidog's authoritative internal route. Use `apidog-sync-mcp-server` only if you specifically need its reorganization planner or schema upsert helpers.
 
 ## License
 

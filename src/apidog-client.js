@@ -119,14 +119,65 @@ export class ApidogClient {
   }
 
   /**
+   * Create a new HTTP endpoint via the internal POST /http-apis route
+   * (the same call the Apidog web app makes when you add an endpoint).
+   * `payload` must include at minimum `folderId`, `name`, `method`, `path`.
+   * Everything else (parameters, requestBody, responses, status, tags,
+   * description, …) is forwarded as-is.
+   */
+  async createHttpApi(payload) {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('createHttpApi: payload is required');
+    }
+    for (const k of ['folderId', 'name', 'method', 'path']) {
+      if (payload[k] === undefined || payload[k] === null) {
+        throw new Error(`createHttpApi: ${k} is required`);
+      }
+    }
+    const url = `${INTERNAL_BASE}/v1/projects/${this.projectId}/http-apis`;
+    const res = await this.#request('POST', url, payload);
+    return res?.data ?? res;
+  }
+
+  /**
+   * Generic partial update for an HTTP endpoint. Sends the given patch
+   * as the PUT body to `/http-apis/{eid}` — the same authoritative route
+   * the Apidog web app uses when you edit an endpoint. Only the keys you
+   * include are touched; everything else on the endpoint is preserved.
+   *
+   * Commonly accepted keys: name, path, method, status, description,
+   * tags, folderId, parameters, requestBody, responses.
+   */
+  async updateHttpApi(endpointId, patch) {
+    if (!endpointId) throw new Error('updateHttpApi: endpointId is required');
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new Error('updateHttpApi: patch must be a non-empty object');
+    }
+    if (Object.keys(patch).length === 0) {
+      throw new Error('updateHttpApi: patch is empty — nothing to update');
+    }
+    const url = `${INTERNAL_BASE}/v1/projects/${this.projectId}/http-apis/${endpointId}`;
+    return this.#request('PUT', url, patch);
+  }
+
+  /**
    * Update an endpoint's folder. This is the authoritative move:
    * it writes `folderId` on the endpoint entity itself, which is
    * the true source of truth in Apidog (the folder's `children`
    * array is derived/display-only and ignored on its own).
    */
   async setEndpointFolder(endpointId, folderId) {
+    return this.updateHttpApi(endpointId, { folderId });
+  }
+
+  /**
+   * Delete an endpoint. Irreversible from the API — Apidog does not
+   * surface a trash-recovery endpoint for HTTP APIs.
+   */
+  async deleteHttpApi(endpointId) {
+    if (!endpointId) throw new Error('deleteHttpApi: endpointId is required');
     const url = `${INTERNAL_BASE}/v1/projects/${this.projectId}/http-apis/${endpointId}`;
-    return this.#request('PUT', url, { folderId });
+    return this.#request('DELETE', url);
   }
 
   /**

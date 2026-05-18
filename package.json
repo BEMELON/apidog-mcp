@@ -1,7 +1,7 @@
 {
   "name": "apidog-mcp",
-  "version": "0.1.0",
-  "description": "MCP server for Apidog with working folder management. Uses Apidog's internal api-folders endpoint to bypass the silent-fail issue where x-apidog-folder updates via import-openapi are ignored.",
+  "version": "0.2.0",
+  "description": "MCP server for Apidog with working folder management + endpoint update/delete via the authoritative internal http-apis route. Bypasses the silent-fail issue where x-apidog-folder updates via import-openapi are ignored.",
   "type": "module",
   "main": "src/index.js",
   "bin": {
