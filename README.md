@@ -163,6 +163,29 @@ delete_endpoint { "method": "get", "path": "/admin/legacy/foo", "confirm": true 
 
 `apidog-mcp` now covers folder ops + endpoint partial update + delete via Apidog's authoritative internal route. Use `apidog-sync-mcp-server` only if you specifically need its reorganization planner or schema upsert helpers.
 
+## Bundled Claude Code skill
+
+`skills/apidog-fields/SKILL.md` is a project-specific field reference (extension keys, status enum values, security schemes, content types, folder conventions) extracted from a live Apidog spec via `scripts/extract-fields.js`. It's the field cheat-sheet you actually need when calling `create_endpoint` / `update_endpoint`.
+
+To make Claude Code auto-load it, symlink into your skills dir:
+
+```bash
+# Per-project
+ln -s "$(pwd)/skills/apidog-fields" /path/to/your-repo/.claude/skills/apidog-fields
+
+# Or user-global
+ln -s "$(pwd)/skills/apidog-fields" ~/.claude/skills/apidog-fields
+```
+
+Re-extract for your own Apidog project:
+
+```bash
+APIDOG_ACCESS_TOKEN=... APIDOG_PROJECT_ID=... \
+  node scripts/extract-fields.js > /tmp/apidog-fields.json
+```
+
+Diff the JSON and update the skill body when your spec drifts.
+
 ## License
 
 MIT
