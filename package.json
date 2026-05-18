@@ -1,0 +1,43 @@
+{
+  "name": "apidog-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Apidog with working folder management. Uses Apidog's internal api-folders endpoint to bypass the silent-fail issue where x-apidog-folder updates via import-openapi are ignored.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "apidog-mcp": "src/index.js"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "apidog",
+    "api-documentation",
+    "openapi",
+    "folder-management",
+    "claude"
+  ],
+  "author": "khwang (kyudo.hwang@a-bly.com)",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BEMELON/apidog-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BEMELON/apidog-mcp/issues"
+  },
+  "homepage": "https://github.com/BEMELON/apidog-mcp#readme"
+}
