@@ -16,7 +16,7 @@ Apidog stores an endpoint's folder in a `folderId` field on the endpoint entity 
 |---|---|
 | `analyze_folders` | Folder tree + folder→endpoint mapping + list of unfoldered endpoints. Start here. |
 | `list_endpoints` | Filterable endpoint listing (`filterPath`, `filterFolder`, `filterStatus`, `unfolderedOnly`). |
-| `get_endpoint` | Full operation object for a single `{method, path}`. |
+| `get_endpoint` | Full endpoint detail. **Default reads the ground truth** via internal `/http-apis/{eid}` (same payload `update_endpoint` writes to). Pass `source: "openapi"` for the OpenAPI export view — which is LOSSY (Apidog's converter may drop or reshape `requestBody`/`parameters`/`x-apidog-*`). |
 | `export_spec` | Raw OpenAPI export (3.0 or 3.1) including Apidog extensions. |
 | `create_folder` | Create a new folder under a parent (by path or id). |
 | `move_endpoints` | **Actually moves** endpoints into a folder via the internal `http-apis/{id}` PUT. |
@@ -127,16 +127,58 @@ update_endpoint {
 }
 ```
 
-Send raw schema fields the named args don't cover:
+Send raw schema fields the named args don't cover.
+
+> ⚠️ **`patch` requires Apidog's internal flat format**, not OpenAPI nested. OpenAPI-shaped PUTs return 200 OK but the field never appears in the UI — silent fail. Use:
+> - `requestBody` → `{ type: "<mime>", required, jsonSchema, parameters: [] }` (no `content.<mime>.schema` wrapper; multipart form fields live in `requestBody.parameters[]`).
+> - `parameters` → object keyed by location: `{ path: [...], query: [...], cookie: [], header: [] }`. Each item: `{ id, name, required, enable: true, type, schema: { ... } }`.
+> - `responses` → array of `{ name, code, contentType: "json", jsonSchema }` (never an OpenAPI status-code-keyed object).
 
 ```
 update_endpoint {
   "endpointId": 15170107,
   "patch": {
-    "parameters": [ /* ... */ ],
-    "responses":  { /* ... */ }
+    "parameters": {
+      "query": [{
+        "id": "q1", "name": "page", "required": false, "enable": true,
+        "example": "1", "type": "integer",
+        "schema": { "type": "integer", "minimum": 1, "default": 20 }
+      }]
+    },
+    "requestBody": {
+      "type": "application/json",
+      "required": true,
+      "jsonSchema": { "type": "object", "properties": { "name": { "type": "string" } } }
+    },
+    "responses": [
+      { "name": "Success", "code": 200, "contentType": "json",
+        "jsonSchema": { "type": "object", "properties": { "id": { "type": "integer" } } } }
+    ]
   }
 }
+```
+
+Dry-run a large patch to see exactly what gets PUT, without actually committing:
+
+```
+update_endpoint {
+  "endpointId": 15170107,
+  "patch": { /* ... */ },
+  "dryRun": true
+}
+```
+
+Verify a write landed by reading the **ground truth** (internal `/http-apis/{eid}`, not the OpenAPI export):
+
+```
+get_endpoint { "endpointId": 15170107 }
+// → { "_source": "internal", "parameters": {...}, "requestBody": {...}, "responses": [...] }
+```
+
+Read the OpenAPI export view instead (lossy — may hide fields that are actually stored):
+
+```
+get_endpoint { "endpointId": 15170107, "source": "openapi" }
 ```
 
 Delete (requires `confirm: true`):
@@ -148,9 +190,10 @@ delete_endpoint { "method": "get", "path": "/admin/legacy/foo", "confirm": true 
 ## Implementation notes
 
 - **Public endpoints** (`https://api.apidog.com`): `export-openapi`, `import-openapi`. Used for read-only spec snapshots.
-- **Internal endpoints** (`https://app.apidog.com/api`): `api-folders` CRUD + `http-apis/{eid}` for endpoint moves. Same Bearer token works for both hosts.
+- **Internal endpoints** (`https://app.apidog.com/api`): `api-folders` CRUD + `http-apis/{eid}` for endpoint reads/writes. Same Bearer token works for both hosts.
 - The authoritative move is `PUT /v1/projects/{pid}/http-apis/{eid}` with `{ folderId: <fid> }`. Updating `x-apidog-folder` via import-openapi, or the folder's `children` array, has **no effect** on its own.
-- Folder paths are reconstructed by walking `parentId` until `type: "root"` is reached — APIDOG's own scheme.
+- **`get_endpoint` defaults to the internal route** so reads see the same shape writes use. The OpenAPI export is a *derived* view: Apidog's converter strips or transforms several fields (some `requestBody` cases, certain `parameters` entries, parts of `x-apidog-*`). If you want to verify a `update_endpoint` patch landed, stay on `source: "internal"`. `source: "openapi"` is only useful when you specifically want the exported OpenAPI form.
+- Folder paths are reconstructed by walking `parentId` until `type: "root"` is reached — Apidog's own scheme.
 
 ## Differences from `apidog-sync-mcp-server`
 

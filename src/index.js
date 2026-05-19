@@ -74,13 +74,14 @@ const TOOLS = [
   {
     name: 'get_endpoint',
     description:
-      'Return the full operation object for a single endpoint (method + path). Use to inspect existing format before changes.',
+      'Return the full endpoint detail. By default reads the GROUND TRUTH via the internal GET /http-apis/{eid} route — the same payload PUT writes to, so what you see here is exactly what was stored. The OpenAPI export (source: "openapi") is a LOSSY view: Apidog\'s export converter may drop or transform requestBody / parameters / x-apidog-* extensions, so a field can be successfully PUT and still appear missing if you read via export. Identify by `endpointId` OR `{method, path}` (method+path triggers one export-openapi lookup to resolve the id, then the internal call).',
     inputSchema: {
       type: 'object',
-      required: ['method', 'path'],
       properties: {
-        method: { type: 'string', enum: ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'] },
-        path: { type: 'string' },
+        endpointId: { type: 'number', description: 'Numeric endpoint id. Preferred. Alternative to method+path.' },
+        method: { type: 'string', enum: ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'], description: 'Lookup key. Use with `path`.' },
+        path: { type: 'string', description: 'Lookup key. Use with `method`.' },
+        source: { type: 'string', enum: ['internal', 'openapi'], default: 'internal', description: '`internal` (default) = raw payload from /http-apis/{eid}, ground truth. `openapi` = OpenAPI export view, may be lossy.' },
       },
     },
   },
@@ -114,7 +115,7 @@ const TOOLS = [
   {
     name: 'create_endpoint',
     description:
-      'Create a new HTTP endpoint via the internal POST /http-apis route (the same call the Apidog web app makes when you add an endpoint). Required: `name`, `method`, `path`, and either `folderId` or `targetFolderPath`. Optional named fields cover the common cases (status, description, tags). Use `patch` to pass through anything else (parameters, requestBody, responses, etc.).',
+      'Create a new HTTP endpoint via the internal POST /http-apis route (the same call the Apidog web app makes when you add an endpoint). Required: `name`, `method`, `path`, and either `folderId` or `targetFolderPath`. Optional named fields cover the common cases (status, description, tags). Use `patch` to pass through anything else (parameters, requestBody, responses, etc.).\n\n⚠️ Schema fields in `patch` MUST use Apidog\'s internal flat format, not OpenAPI nested — see `update_endpoint` description for the full shape (`requestBody.jsonSchema` no content wrapper, `parameters` object keyed by location, `responses` array with `{name, code, contentType, jsonSchema}`). OpenAPI nested shapes here return 200 OK but never appear in the UI (silent fail).',
     inputSchema: {
       type: 'object',
       required: ['name', 'method', 'path'],
@@ -138,7 +139,7 @@ const TOOLS = [
   {
     name: 'update_endpoint',
     description:
-      'Partial update of a single endpoint via the authoritative PUT /http-apis/{eid} route (same call the Apidog web app makes when you edit an endpoint). Identify the endpoint by `endpointId` OR by `{method, path}`. Provide any of the named patch fields, and/or a free-form `patch` object for keys not covered explicitly. Only the keys you send are touched — everything else on the endpoint is preserved. Use this when you need to change an endpoint\'s name, status, path/method, tags, description, folder, or raw schema fields (parameters/requestBody/responses) without rewriting the whole spec.',
+      'Partial update of a single endpoint via the authoritative PUT /http-apis/{eid} route (same call the Apidog web app makes when you edit an endpoint). Identify the endpoint by `endpointId` OR by `{method, path}`. Provide any of the named patch fields, and/or a free-form `patch` object for keys not covered explicitly. Only the keys you send are touched — everything else on the endpoint is preserved.\n\n⚠️ SCHEMA PATCHES (parameters / requestBody / responses) MUST use Apidog\'s INTERNAL FLAT FORMAT, not OpenAPI nested. OpenAPI nested PUTs return 200 OK but the field never appears in the UI (silent fail). Required shapes:\n  • requestBody: { type: "application/json" | "multipart/form-data", required, jsonSchema, parameters: [] }  — `type` field carries the MIME; schema goes directly under `jsonSchema` (no `content.<mime>.schema` wrapper). multipart form fields go in `requestBody.parameters[]`, each with { id, name, type, required, enable, schema }.\n  • parameters: OBJECT keyed by location: { path: [...], query: [...], cookie: [], header: [] }  — NOT an OpenAPI array of { in, ... }. Each entry needs { id (unique), name, required, enable: true, type (top-level), schema: { ... constraints ... } }. `example` is a single string scalar, not an `examples` array.\n  • responses: ARRAY with explicit code: [{ name, code, contentType: "json", description, jsonSchema }]  — NOT an OpenAPI object keyed by status code.\n\nVerify writes with `get_endpoint { endpointId }` (defaults to `source: "internal"` which reads the same payload the UI does). Use `dryRun: true` to echo the resolved PUT body without sending — recommended for any non-trivial schema patch.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -157,6 +158,10 @@ const TOOLS = [
           type: 'object',
           description: 'Free-form keys merged into the PUT body for anything not covered by the named fields (e.g. parameters, requestBody, responses, customApiFields).',
           additionalProperties: true,
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true, return the resolved endpointId and the body that would be sent — without making the PUT. Use to verify large patches before committing.',
         },
       },
     },
@@ -291,16 +296,71 @@ const handlers = {
   },
 
   async get_endpoint({ client, args }) {
-    if (!args.method || !args.path) throw new Error('method and path are required');
-    const spec = await client.exportSpec({ includeExtensions: true });
-    const op = spec?.paths?.[args.path]?.[args.method.toLowerCase()];
-    if (!op) throw new Error(`Not found: ${args.method.toUpperCase()} ${args.path}`);
+    const source = args.source || 'internal';
+    let endpointId = args.endpointId;
+    let openapiOp = null;
+    let method = args.method ? args.method.toLowerCase() : null;
+    let path = args.path || null;
+
+    // Resolve endpoint id (load spec only if needed)
+    if (!endpointId) {
+      if (!method || !path) {
+        throw new Error('Provide endpointId, or both method and path');
+      }
+      const spec = await client.exportSpec({ includeExtensions: true });
+      const op = spec?.paths?.[path]?.[method];
+      if (!op) throw new Error(`Not found in spec: ${method.toUpperCase()} ${path}`);
+      endpointId = ApidogClient.parseEndpointId(op['x-run-in-apidog']);
+      if (!endpointId) {
+        throw new Error(`Endpoint has no x-run-in-apidog id: ${method.toUpperCase()} ${path}`);
+      }
+      openapiOp = op;
+    }
+
+    if (source === 'openapi') {
+      if (!openapiOp) {
+        const spec = await client.exportSpec({ includeExtensions: true });
+        for (const ep of ApidogClient.iterEndpoints(spec)) {
+          if (ep.id === endpointId) {
+            openapiOp = ep.operation;
+            method = ep.method;
+            path = ep.path;
+            break;
+          }
+        }
+        if (!openapiOp) {
+          throw new Error(`Endpoint ${endpointId} not found in OpenAPI export`);
+        }
+      }
+      return {
+        _source: 'openapi-export',
+        _note: 'OpenAPI export is LOSSY — Apidog\'s converter may drop or reshape requestBody / parameters / x-apidog-*. For ground truth use source: "internal".',
+        endpointId,
+        method,
+        path,
+        folder: openapiOp['x-apidog-folder'] || null,
+        operation: openapiOp,
+      };
+    }
+
+    // Default: internal — raw payload, ground truth
+    const raw = await client.getHttpApi(endpointId);
+    if (!raw) throw new Error(`Endpoint ${endpointId} not found via internal /http-apis/{eid}`);
     return {
-      method: args.method.toLowerCase(),
-      path: args.path,
-      id: ApidogClient.parseEndpointId(op['x-run-in-apidog']),
-      folder: op['x-apidog-folder'] || null,
-      operation: op,
+      _source: 'internal',
+      _note: 'Raw payload from GET /http-apis/{eid} — the ground-truth stored by PUT. Field shapes are Apidog\'s internal format (parameters keyed by location, responses array, etc.) not OpenAPI.',
+      endpointId,
+      method: (raw.method || method || '').toLowerCase() || null,
+      path: raw.path || path,
+      folderId: raw.folderId ?? null,
+      name: raw.name ?? null,
+      status: raw.status ?? null,
+      tags: raw.tags ?? null,
+      description: raw.description ?? null,
+      parameters: raw.parameters ?? null,
+      requestBody: raw.requestBody ?? null,
+      responses: raw.responses ?? null,
+      raw,
     };
   },
 
@@ -381,6 +441,18 @@ const handlers = {
 
     if (Object.keys(body).length === 0) {
       throw new Error('No update fields provided — pass at least one of name/status/description/tags/newPath/newMethod/folderId/targetFolderPath/patch');
+    }
+
+    if (args.dryRun === true) {
+      return {
+        dryRun: true,
+        endpointId,
+        method: 'PUT',
+        url: `https://app.apidog.com/api/v1/projects/${client.projectId}/http-apis/${endpointId}`,
+        updatedKeys: Object.keys(body),
+        body,
+        note: 'No request sent. Re-run without dryRun to apply.',
+      };
     }
 
     await client.updateHttpApi(endpointId, body);

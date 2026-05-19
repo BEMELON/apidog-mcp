@@ -79,6 +79,48 @@ Header params seen include `baggage` (Datadog distributed tracing — auto-injec
 
 ## 5. Request / response shape
 
+> ⚠️ **The shapes below are what the OpenAPI export looks like.** The `update_endpoint` / `create_endpoint` `patch` field does **NOT** accept those shapes — it requires Apidog's internal flat format. Mixing them up is the #1 silent-fail trap: a PUT with OpenAPI-nested `requestBody.content.<mime>.schema` returns 200 OK and the UI shows nothing.
+>
+> **Patch-side cheat sheet (this is what you write in `patch`):**
+>
+> ```jsonc
+> {
+>   "requestBody": {
+>     "type": "application/json",         // MIME goes here, not as a content-key
+>     "required": true,
+>     "additionalContentTypes": [],
+>     "parameters": [],                   // populated only when type === "multipart/form-data"
+>     "jsonSchema": { /* schema directly — no content wrapper */ }
+>   },
+>   "parameters": {                       // object, NOT array
+>     "path":   [{ "id":"<unique>","name":"sno","required":true,"enable":true,"type":"integer","schema":{"type":"integer"} }],
+>     "query":  [{ "id":"<unique>","name":"page","required":false,"enable":true,"example":"1","type":"integer","schema":{"type":"integer","minimum":1,"default":20} }],
+>     "cookie": [],
+>     "header": []
+>   },
+>   "responses": [                        // array, each entry carries its own code
+>     { "name":"Success","code":200,"contentType":"json","jsonSchema":{ /* ... */ } }
+>   ]
+> }
+> ```
+>
+> multipart form fields go inside `requestBody.parameters[]` (not the top-level `parameters` object):
+>
+> ```jsonc
+> { "requestBody": {
+>     "type": "multipart/form-data",
+>     "required": true,
+>     "parameters": [
+>       { "id":"<unique>","name":"file","type":"file","required":true,"enable":true,
+>         "schema":{ "type":"string","format":"binary" } },
+>       { "id":"<unique>","name":"image_type","type":"string","required":true,"enable":true,
+>         "schema":{ "type":"string","enum":["HOME_TAB_TOP_ICON"] } }
+>     ]
+> } }
+> ```
+>
+> Always verify via `get_endpoint { endpointId }` (default `source: "internal"` since v0.2.x — same shape the UI reads).
+
 ### Request content types
 
 ```
@@ -191,8 +233,29 @@ Common partial updates:
 { "method": "get", "path": "/admin/legacy", "name": "관리자 …",
   "targetFolderPath": "ABLY/운드민" }
 
-// Raw schema patch (parameters/requestBody/responses preserved as-is)
-{ "endpointId": 15170107, "patch": { "parameters": [ /* … */ ] } }
+// Raw schema patch — ALWAYS Apidog internal flat shape (see §5).
+// OpenAPI-nested shapes here return 200 OK but the field never appears in the UI.
+{ "endpointId": 15170107,
+  "patch": {
+    "parameters": {                 // object keyed by location, NOT an array
+      "query": [{ "id":"q1","name":"page","required":false,"enable":true,
+                  "example":"1","type":"integer",
+                  "schema":{"type":"integer","minimum":1,"default":20} }]
+    },
+    "requestBody": {
+      "type": "application/json",   // MIME on type field, schema directly under jsonSchema
+      "required": true,
+      "jsonSchema": { "type":"object","properties":{ "name":{"type":"string"} } }
+    },
+    "responses": [
+      { "name":"Success","code":200,"contentType":"json",
+        "jsonSchema":{ "type":"object","properties":{ "id":{"type":"integer"} } } }
+    ]
+  }
+}
+
+// Dry-run before committing a big patch
+{ "endpointId": 15170107, "patch": { /* ... */ }, "dryRun": true }
 ```
 
 ### `delete_endpoint`
@@ -208,6 +271,9 @@ Always pass `confirm: true`. Irreversible.
 3. **`x-apidog` security reference with no scheme** exists on some operations. Harmless but don't propagate it to new ops.
 4. **Auto-injected headers** (`baggage`, `Authorization`, `Accept`, `Content-Type`) appear as parameters on many operations because Apidog's import keeps them. When authoring new endpoints, omit them — the Apidog UI re-adds them from the security/content-type.
 5. **Status enum is narrower in practice than in docs** — stick to `released` / `developing` / `designing` unless you have a specific reason.
+6. **`get_endpoint` default is the internal ground truth, NOT the OpenAPI export.** As of v0.2.x, `get_endpoint` calls `/http-apis/{eid}` directly and returns the raw payload — same shape `update_endpoint` writes to. The response is tagged `_source: "internal"`. If you want the OpenAPI form, pass `source: "openapi"` explicitly, but expect drift: the export converter drops/transforms some `requestBody`, `parameters`, and `x-apidog-*` fields, so a successful PUT can look missing through the export view.
+7. **`update_endpoint` patch MUST use Apidog's internal flat shape, not OpenAPI nested.** OpenAPI nested (`content.<mime>.schema`, `parameters: [{in}]`, `responses: {"200": {...}}`) PUTs return **200 OK but the UI never shows the field** — silent UI fail, not 500. Confirmed 2026-05-19 across 11 endpoints. Use the format documented in §5 below: `requestBody.jsonSchema` (no content wrapper, `type` field = MIME), `parameters` as an object keyed by location, parameter items with top-level `id` + `enable` + `type` + nested `schema`, `responses` as an array with `{name, code, contentType, jsonSchema}`. Always verify via `get_endpoint` (default `source: "internal"` since v0.2.x) — same shape the UI reads.
+8. **Use `dryRun: true` on big `update_endpoint` patches.** Returns the resolved PUT body + URL without sending the request — cheap way to sanity-check a large patch before you commit.
 
 ---
 
